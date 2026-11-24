@@ -1,0 +1,90 @@
+name: Build TESO MELODIES APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Find and extract uploaded source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="TESO-MELODIES-main.zip"
+          if [ ! -f "$ARCHIVE" ]; then
+            echo "::error::Upload TESO-MELODIES-main.zip to the repository root first."
+            exit 1
+          fi
+          mkdir -p source-extracted
+          unzip -q "$ARCHIVE" -d source-extracted
+          SOURCE_DIR="$(find source-extracted -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          if [ -z "$SOURCE_DIR" ] || [ ! -f "$SOURCE_DIR/package.json" ]; then
+            echo "::error::The ZIP must contain a project folder with package.json."
+            exit 1
+          fi
+          cp -a "$SOURCE_DIR"/. .
+          rm -rf source-extracted
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install web dependencies
+        run: npm install
+
+      - name: Configure Capacitor for the live website
+        shell: bash
+        run: |
+          npm install @capacitor/core @capacitor/android
+          npm install --save-dev @capacitor/cli
+          cat > capacitor.config.ts <<'EOF'
+          import type { CapacitorConfig } from '@capacitor/cli';
+
+          const config: CapacitorConfig = {
+            appId: 'com.tesomelodies.app',
+            appName: 'TESO MELODIES',
+            webDir: 'dist',
+            server: {
+              url: 'https://tesomelodies.com',
+              cleartext: false,
+              androidScheme: 'https'
+            }
+          };
+
+          export default config;
+          EOF
+          npx cap add android
+
+      - name: Build web project and sync Android
+        run: |
+          npm run build
+          npx cap sync android
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: teso-melodies-android-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
